@@ -1,6 +1,11 @@
 name: Build and publish Study Ink preview
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'Study_Ink_v0.6_Windows10_Android_Source.zip'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
       source_zip:
@@ -21,7 +26,7 @@ jobs:
   android:
     runs-on: ubuntu-latest
     env:
-      SOURCE_ZIP: ${{ inputs.source_zip }}
+      SOURCE_ZIP: ${{ inputs.source_zip || 'Study_Ink_v0.6_Windows10_Android_Source.zip' }}
     steps:
       - uses: actions/checkout@v4
       - name: Unpack source
@@ -62,7 +67,7 @@ jobs:
   windows:
     runs-on: windows-2022
     env:
-      SOURCE_ZIP: ${{ inputs.source_zip }}
+      SOURCE_ZIP: ${{ inputs.source_zip || 'Study_Ink_v0.6_Windows10_Android_Source.zip' }}
     steps:
       - uses: actions/checkout@v4
       - name: Unpack source
@@ -102,7 +107,7 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      RELEASE_TAG: ${{ inputs.release_tag }}
+      RELEASE_TAG: ${{ inputs.release_tag || format('v0.6.0-beta.{0}', github.run_number) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
