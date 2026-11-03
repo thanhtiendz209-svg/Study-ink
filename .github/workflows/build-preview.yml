@@ -1,0 +1,130 @@
+name: Build Study Ink v0.7.5 preview
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Study_Ink_v0.7.5_Windows10_Android_TwoPages_Pinch_Shapes_Source.zip'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_ZIP: Study_Ink_v0.7.5_Windows10_Android_TwoPages_Pinch_Shapes_Source.zip
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract Study Ink source safely
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path, PurePosixPath
+          from zipfile import ZipFile
+          import os
+          p = Path(os.environ['SOURCE_ZIP'])
+          if not p.exists():
+              raise SystemExit(f'Source ZIP missing: {p.name}. Upload it to the repository first.')
+          with ZipFile(p) as z:
+              for entry in z.infolist():
+                  name = entry.filename.replace('\\', '/')
+                  parts = PurePosixPath(name).parts
+                  if name.startswith('/') or '..' in parts:
+                      raise SystemExit(f'Unsafe archive entry: {entry.filename}')
+              z.extractall('.')
+          assert Path('pubspec.yaml').is_file(), 'Missing Flutter pubspec.yaml at ZIP root'
+          PY
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter create --project-name study_ink --platforms=android .
+      - run: flutter pub get
+      - name: Remove unrelated generated starter test
+        run: python3 -c "from pathlib import Path; Path('test/widget_test.dart').unlink(missing_ok=True)"
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+      - name: Unit tests
+        run: flutter test
+      - name: Build APKs
+        run: flutter build apk --release --split-per-abi --split-debug-info=build/symbols/android
+      - name: Check APKs
+        shell: bash
+        run: |
+          ls -lh build/app/outputs/flutter-apk/*-release.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studyink-android-apks
+          path: build/app/outputs/flutter-apk/*-release.apk
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract Study Ink source
+        shell: pwsh
+        run: |
+          if (!(Test-Path -LiteralPath $env:SOURCE_ZIP)) { throw "Source ZIP missing: $env:SOURCE_ZIP. Upload it first." }
+          Expand-Archive -LiteralPath $env:SOURCE_ZIP -DestinationPath . -Force
+          if (!(Test-Path pubspec.yaml)) { throw 'Missing Flutter pubspec.yaml at ZIP root' }
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter create --project-name study_ink --platforms=windows .
+      - run: flutter pub get
+      - name: Install PDFium
+        run: dart run pdfx:install_windows
+      - name: Remove unrelated generated starter test
+        shell: pwsh
+        run: |
+          if (Test-Path test/widget_test.dart) { Remove-Item test/widget_test.dart }
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test
+      - run: flutter build windows --release --split-debug-info=build/symbols/windows
+      - name: Package full Windows application
+        shell: pwsh
+        run: |
+          $folder = 'build/windows/x64/runner/Release'
+          if (!(Test-Path $folder)) { throw 'Windows output folder missing' }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path "$folder/*" -DestinationPath 'dist/Study-Ink-v0.7.5-Windows10-x64.zip' -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studyink-windows10-zip
+          path: dist/Study-Ink-v0.7.5-Windows10-x64.zip
+          if-no-files-found: error
+
+  release:
+    needs: [android, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: v0.7.5-beta.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: studyink-*
+          path: dist
+          merge-multiple: true
+      - name: Publish prerelease
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -lah dist
+          test -s dist/Study-Ink-v0.7.5-Windows10-x64.zip
+          test -s dist/app-arm64-v8a-release.apk
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release already exists: $TAG"; exit 1
+          fi
+          gh release create "$TAG" dist/*.apk dist/*.zip --target "$GITHUB_SHA" \
+            --title "Study Ink v0.7.5 preview (Windows 10 + Android)" \
+            --notes "Experimental unsigned build. For Android, most modern phones use the arm64-v8a APK. For Windows 10 64-bit, unzip the entire Windows package and open study_ink.exe. Back up your notes before testing." \
+            --prerelease --latest=false
